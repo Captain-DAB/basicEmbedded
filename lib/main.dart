@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:async';
+import 'hardware_input_page.dart';
 
 void main() {
   runApp(MyApp());
@@ -15,7 +16,44 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Bluetooth Bulb Controller',
       theme: ThemeData(primarySwatch: Colors.blue),
-      home: BulbControlPage(),
+      home: HomePage(),
+    );
+  }
+}
+
+class HomePage extends StatelessWidget {
+  const HomePage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Bluetooth Demo Home')),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            ElevatedButton(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => BulbControlPage()),
+                );
+              },
+              child: Text('Bulb Control', style: TextStyle(fontSize: 20)),
+            ),
+            SizedBox(height: 30),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => HardwareInputPage()),
+                );
+              },
+              child: Text('Hardware Input', style: TextStyle(fontSize: 20)),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -209,3 +247,23 @@ class _BulbControlPageState extends State<BulbControlPage> {
     );
   }
 }
+
+// Arduino code
+// #define BULB_PIN 8
+
+// void setup() {
+//   pinMode(BULB_PIN, OUTPUT);
+//   digitalWrite(BULB_PIN, LOW); // Bulb OFF
+//   Serial.begin(9600);
+// }
+
+// void loop() {
+//   if (Serial.available()) {
+//     char cmd = Serial.read();
+//     if (cmd == '1') {
+//       digitalWrite(BULB_PIN, HIGH); // Bulb ON
+//     } else if (cmd == '0') {
+//       digitalWrite(BULB_PIN, LOW); // Bulb OFF
+//     }
+//   }
+// }

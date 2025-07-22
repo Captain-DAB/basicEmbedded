@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
+import 'dart:typed_data';
 import 'dart:async';
 import 'hardware_input_page.dart';
 
@@ -66,60 +66,46 @@ class BulbControlPage extends StatefulWidget {
 }
 
 class _BulbControlPageState extends State<BulbControlPage> {
-  BluetoothDevice? device;
-  BluetoothCharacteristic? characteristic;
-
+  BluetoothConnection? connection;
   bool bulbOn = false;
   bool isConnecting = false;
   String status = "";
-
   final String targetDeviceName = "HC-05";
-
-  BluetoothAdapterState adapterState = BluetoothAdapterState.unknown;
-  StreamSubscription<BluetoothAdapterState>? adapterStateSubscription;
-  StreamSubscription<List<ScanResult>>? scanSubscription;
+  BluetoothState bluetoothState = BluetoothState.UNKNOWN;
+  StreamSubscription<BluetoothState>? bluetoothStateSubscription;
 
   @override
   void initState() {
     super.initState();
-    // Listen for Bluetooth state changes
-    adapterStateSubscription = FlutterBluePlus.adapterState.listen((state) {
-      setState(() {
-        adapterState = state;
-        if (state != BluetoothAdapterState.on) {
-          isConnecting = false;
-          status = "Please turn on Bluetooth";
-        } else {
-          // Bluetooth is ON, allow scan again
-          if (device == null || status == "Please turn on Bluetooth") {
-            status = "Device not found. Please try again.";
-          }
-        }
-      });
-    });
+    bluetoothStateSubscription = FlutterBluetoothSerial.instance
+        .onStateChanged()
+        .listen((state) {
+          setState(() {
+            bluetoothState = state;
+            if (state != BluetoothState.STATE_ON) {
+              isConnecting = false;
+              status = "Please turn on Bluetooth";
+            } else {
+              if (connection == null || status == "Please turn on Bluetooth") {
+                status = "Device not found. Please try again.";
+              }
+            }
+          });
+        });
     requestPermissionsAndScan();
   }
 
   Future<void> requestPermissionsAndScan() async {
-    // Request Bluetooth and location permissions
-    await Permission.bluetooth.request();
-    await Permission.bluetoothScan.request();
-    await Permission.bluetoothConnect.request();
-    await Permission.location.request();
-
-    // Turn on Bluetooth (no await needed)
-    FlutterBluePlus.turnOn();
-
-    // Wait until the adapter is ON
-    await FlutterBluePlus.adapterState.firstWhere(
-      (state) => state == BluetoothAdapterState.on,
-    );
-
+    // No additional permissions needed, handled by plugin
+    // Ensure Bluetooth is enabled
+    if (bluetoothState != BluetoothState.STATE_ON) {
+      await FlutterBluetoothSerial.instance.requestEnable();
+    }
     scanAndConnect();
   }
 
   void scanAndConnect() async {
-    if (adapterState != BluetoothAdapterState.on) {
+    if (bluetoothState != BluetoothState.STATE_ON) {
       setState(() {
         isConnecting = false;
         status = "Please turn on Bluetooth";
@@ -128,57 +114,47 @@ class _BulbControlPageState extends State<BulbControlPage> {
     }
     setState(() {
       isConnecting = true;
-      status = "Scanning for device...";
+      status = "Scanning...";
     });
-
-    FlutterBluePlus.startScan(timeout: Duration(seconds: 5));
-
-    scanSubscription = FlutterBluePlus.scanResults.listen(
-      (results) async {
-        bool found = false;
-        for (ScanResult r in results) {
-          if (r.device.name == targetDeviceName) {
-            found = true;
-            FlutterBluePlus.stopScan();
-            device = r.device;
-            setState(() { status = "Connecting to device..."; });
-            await device!.connect();
-            List<BluetoothService> services = await device!.discoverServices();
-            for (BluetoothService service in services) {
-              for (BluetoothCharacteristic c in service.characteristics) {
-                if (c.properties.write) {
-                  characteristic = c;
-                  break;
-                }
-              }
-            }
-            setState(() {
-              isConnecting = false;
-              status = "Connected!";
-            });
-            break;
-          }
-        }
-        // If scan finished and device not found, show message and stop
-        if (!found) {
-          Future.delayed(const Duration(seconds: 5), () {
-            if (!found && mounted && device == null) {
-              setState(() {
-                isConnecting = false;
-                status = "Device not found. Please try again.";
-              });
-              scanSubscription?.cancel();
-            }
-          });
-        }
-      },
-    );
+    List<BluetoothDevice> bondedDevices =
+        await FlutterBluetoothSerial.instance.getBondedDevices();
+    BluetoothDevice? targetDevice;
+    for (BluetoothDevice d in bondedDevices) {
+      if (d.name == targetDeviceName) {
+        targetDevice = d;
+        break;
+      }
+    }
+    if (targetDevice != null) {
+      setState(() {
+        status = "Connecting...";
+      });
+      try {
+        connection = await BluetoothConnection.toAddress(targetDevice.address);
+        setState(() {
+          isConnecting = false;
+          status = "Connected!";
+        });
+      } catch (e) {
+        setState(() {
+          isConnecting = false;
+          status = "Connection failed.";
+        });
+        print("Connection failed: $e");
+      }
+    } else {
+      setState(() {
+        isConnecting = false;
+        status = "Device not found.";
+      });
+    }
   }
 
   void toggleBulb() async {
-    if (characteristic != null) {
+    if (connection != null && connection!.isConnected) {
       String command = bulbOn ? "0" : "1";
-      await characteristic!.write(command.codeUnits);
+      connection!.output.add(Uint8List.fromList(command.codeUnits));
+      await connection!.output.allSent;
       setState(() {
         bulbOn = !bulbOn;
       });
@@ -187,62 +163,71 @@ class _BulbControlPageState extends State<BulbControlPage> {
 
   @override
   void dispose() {
-    scanSubscription?.cancel();
-    adapterStateSubscription?.cancel();
-    device?.disconnect();
+    bluetoothStateSubscription?.cancel();
+    connection?.close();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text('Bluetooth Bulb Controller'),
-      ),
+      appBar: AppBar(title: Text('Bluetooth Bulb Controller')),
       body: Center(
-        child: isConnecting
-            ? Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 20),
-                  Text(status, style: TextStyle(fontSize: 18)),
-                ],
-              )
-            : Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    bulbOn ? Icons.lightbulb : Icons.lightbulb_outline,
-                    color: bulbOn ? Colors.green : Colors.red,
-                    size: 100,
-                  ),
-                  SizedBox(height: 30),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: bulbOn ? Colors.green : Colors.red,
-                      minimumSize: Size(200, 80),
+        child:
+            isConnecting
+                ? Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 20),
+                    Text(
+                      status,
+                      style: TextStyle(fontSize: 18),
+                      textAlign: TextAlign.center,
                     ),
-                    onPressed: toggleBulb,
-                    child: Text(
-                      bulbOn ? "Turn Bulb OFF" : "Turn Bulb ON",
-                      style: TextStyle(fontSize: 24, color: Colors.white),
+                  ],
+                )
+                : Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      bulbOn ? Icons.lightbulb : Icons.lightbulb_outline,
+                      color: bulbOn ? Colors.green : Colors.red,
+                      size: 100,
                     ),
-                  ),
-                  SizedBox(height: 20),
-                  Text(status, style: TextStyle(fontSize: 18)),
-                  if (status == "Device not found. Please try again.")
-                    Padding(
-                      padding: const EdgeInsets.only(top: 20),
-                      child: ElevatedButton(
-                        onPressed: () {
-                          scanAndConnect();
-                        },
-                        child: Text("Scan Again", style: TextStyle(fontSize: 18)),
+                    SizedBox(height: 30),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: bulbOn ? Colors.green : Colors.red,
+                        minimumSize: Size(200, 80),
+                      ),
+                      onPressed: toggleBulb,
+                      child: Text(
+                        bulbOn ? "Turn Bulb OFF" : "Turn Bulb ON",
+                        style: TextStyle(fontSize: 24, color: Colors.white),
                       ),
                     ),
-                ],
-              ),
+                    SizedBox(height: 20),
+                    Text(
+                      status,
+                      style: TextStyle(fontSize: 18),
+                      textAlign: TextAlign.center,
+                    ),
+                    if (status == "Device not found. Please try again.")
+                      Padding(
+                        padding: const EdgeInsets.only(top: 20),
+                        child: ElevatedButton(
+                          onPressed: () {
+                            scanAndConnect();
+                          },
+                          child: Text(
+                            "Scan Again",
+                            style: TextStyle(fontSize: 18),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
       ),
     );
   }

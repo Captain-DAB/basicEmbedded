@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 import 'dart:typed_data';
 import 'dart:async';
-import 'hardware_input_page.dart';
 
 void main() {
   runApp(MyApp());
@@ -16,47 +15,11 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Bluetooth Bulb Controller',
       theme: ThemeData(primarySwatch: Colors.blue),
-      home: HomePage(),
+      home: BulbControlPage(),
     );
   }
 }
 
-class HomePage extends StatelessWidget {
-  const HomePage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text('Bluetooth Demo Home')),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            ElevatedButton(
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => BulbControlPage()),
-                );
-              },
-              child: Text('Bulb Control', style: TextStyle(fontSize: 20)),
-            ),
-            SizedBox(height: 30),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => HardwareInputPage()),
-                );
-              },
-              child: Text('Hardware Input', style: TextStyle(fontSize: 20)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
 
 class BulbControlPage extends StatefulWidget {
   const BulbControlPage({super.key});
@@ -66,106 +29,203 @@ class BulbControlPage extends StatefulWidget {
 }
 
 class _BulbControlPageState extends State<BulbControlPage> {
+  void onDataReceived(Uint8List data) {
+    String incoming = String.fromCharCodes(data);
+    dataBuffer += incoming;
+    if (dataBuffer.contains('\n')) {
+      List<String> parts = dataBuffer.split('\n');
+      for (int i = 0; i < parts.length - 1; i++) {
+        String line = parts[i].trim();
+        if (line.startsWith("Random Value: ")) {
+          String valueStr = line.replaceAll("Random Value: ", "");
+          int? parsed = int.tryParse(valueStr);
+          if (parsed != null) {
+            setState(() {
+              latestValue = parsed;
+            });
+          }
+        }
+      }
+      dataBuffer = parts.last; // Keep leftover
+    }
+  }
+
+  void connectToBluetooth() async {
+    List<BluetoothDevice> bondedDevices =
+        await FlutterBluetoothSerial.instance.getBondedDevices();
+
+    BluetoothDevice? targetDevice;
+    for (BluetoothDevice device in bondedDevices) {
+      if (device.name == targetDeviceName) {
+        targetDevice = device;
+        break;
+      }
+    }
+
+    if (targetDevice == null) {
+      if (!_disposed) {
+        setState(() {
+          status = "HC-05 not found. Pair it first.";
+          isConnecting = false;
+        });
+      }
+      return;
+    }
+
+    try {
+      BluetoothConnection toDevice =
+          await BluetoothConnection.toAddress(targetDevice.address);
+      if (!_disposed) {
+        setState(() {
+          connection = toDevice;
+          status = "Connected to ${(targetDevice != null && targetDevice.name != null) ? targetDevice.name : "HC-05"}";
+          isConnecting = false;
+        });
+      }
+
+      connection!.input!.listen(onDataReceived).onDone(() {
+        if (!_disposed) {
+          setState(() {
+            status = "Disconnected.";
+          });
+        }
+      });
+    } catch (e) {
+      if (!_disposed) {
+        setState(() {
+          status = "Connection failed.";
+          isConnecting = false;
+        });
+      }
+    }
+  }
   BluetoothConnection? connection;
-  bool bulbOn = false;
-  bool isConnecting = false;
-  String status = "";
+  String dataBuffer = "";
+  int latestValue = 0;
+  bool isConnecting = true;
+  String status = "Connecting...";
   final String targetDeviceName = "HC-05";
-  BluetoothState bluetoothState = BluetoothState.UNKNOWN;
-  StreamSubscription<BluetoothState>? bluetoothStateSubscription;
+  bool bulbOn = false;
+  bool _disposed = false;
 
   @override
   void initState() {
     super.initState();
-    bluetoothStateSubscription = FlutterBluetoothSerial.instance
-        .onStateChanged()
-        .listen((state) {
-          setState(() {
-            bluetoothState = state;
-            if (state != BluetoothState.STATE_ON) {
-              isConnecting = false;
-              status = "Please turn on Bluetooth";
-            } else {
-              if (connection == null || status == "Please turn on Bluetooth") {
-                status = "Device not found. Please try again.";
-              }
-            }
-          });
-        });
-    requestPermissionsAndScan();
+    connectToBluetooth();
   }
 
   Future<void> requestPermissionsAndScan() async {
-    // No additional permissions needed, handled by plugin
-    // Ensure Bluetooth is enabled
-    if (bluetoothState != BluetoothState.STATE_ON) {
-      await FlutterBluetoothSerial.instance.requestEnable();
-    }
-    scanAndConnect();
+    // ...existing code...
   }
 
   void scanAndConnect() async {
-    if (bluetoothState != BluetoothState.STATE_ON) {
-      setState(() {
-        isConnecting = false;
-        status = "Please turn on Bluetooth";
-      });
-      return;
-    }
     setState(() {
       isConnecting = true;
       status = "Scanning...";
     });
-    List<BluetoothDevice> bondedDevices =
-        await FlutterBluetoothSerial.instance.getBondedDevices();
-    BluetoothDevice? targetDevice;
-    for (BluetoothDevice d in bondedDevices) {
-      if (d.name == targetDeviceName) {
-        targetDevice = d;
-        break;
-      }
-    }
-    if (targetDevice != null) {
-      setState(() {
-        status = "Connecting...";
-      });
-      try {
-        connection = await BluetoothConnection.toAddress(targetDevice.address);
-        setState(() {
-          isConnecting = false;
-          status = "Connected!";
-        });
-      } catch (e) {
-        setState(() {
-          isConnecting = false;
-          status = "Connection failed.";
-        });
-        print("Connection failed: $e");
-      }
-    } else {
-      setState(() {
-        isConnecting = false;
-        status = "Device not found.";
-      });
-    }
+    connectToBluetooth();
   }
 
   void toggleBulb() async {
     if (connection != null && connection!.isConnected) {
-      String command = bulbOn ? "0" : "1";
-      connection!.output.add(Uint8List.fromList(command.codeUnits));
-      await connection!.output.allSent;
+      try {
+        String command = bulbOn ? "0" : "1";
+        connection!.output.add(Uint8List.fromList(command.codeUnits));
+        await connection!.output.allSent;
+        setState(() {
+          bulbOn = !bulbOn;
+        });
+      } catch (e) {
+        setState(() {
+          status = "Connection lost. Please reconnect.";
+        });
+        connection = null;
+      }
+    } else {
       setState(() {
-        bulbOn = !bulbOn;
+        status = "Not connected.";
       });
     }
   }
 
   @override
   void dispose() {
-    bluetoothStateSubscription?.cancel();
-    connection?.close();
+    _disposed = true;
+    connection?.dispose();
     super.dispose();
+  void onDataReceived(Uint8List data) {
+    if (connection == null || !connection!.isConnected) return;
+    String incoming = String.fromCharCodes(data);
+    dataBuffer += incoming;
+    if (dataBuffer.contains('\n')) {
+      List<String> parts = dataBuffer.split('\n');
+      for (int i = 0; i < parts.length - 1; i++) {
+        String line = parts[i].trim();
+        if (line.startsWith("Random Value: ")) {
+          String valueStr = line.replaceAll("Random Value: ", "");
+          int? parsed = int.tryParse(valueStr);
+          if (parsed != null) {
+            setState(() {
+              latestValue = parsed;
+            });
+          }
+        }
+      }
+      dataBuffer = parts.last; // Keep leftover
+    }
+  }
+
+  void connectToBluetooth() async {
+    List<BluetoothDevice> bondedDevices =
+        await FlutterBluetoothSerial.instance.getBondedDevices();
+
+    BluetoothDevice? targetDevice;
+    for (BluetoothDevice device in bondedDevices) {
+      if (device.name == targetDeviceName) {
+        targetDevice = device;
+        break;
+      }
+    }
+
+    if (targetDevice == null) {
+      if (!_disposed) {
+        setState(() {
+          status = "HC-05 not found. Pair it first.";
+          isConnecting = false;
+        });
+      }
+      return;
+    }
+
+    try {
+      BluetoothConnection toDevice =
+          await BluetoothConnection.toAddress(targetDevice.address);
+      if (!_disposed) {
+        setState(() {
+          connection = toDevice;
+          status = "Connected to ${(targetDevice != null && targetDevice.name != null) ? targetDevice.name : "HC-05"}";
+          isConnecting = false;
+        });
+      }
+
+      connection!.input!.listen(onDataReceived).onDone(() {
+        if (!_disposed) {
+          setState(() {
+            status = "Disconnected.";
+          });
+          connection = null;
+        }
+      });
+    } catch (e) {
+      if (!_disposed) {
+        setState(() {
+          status = "Connection failed.";
+          isConnecting = false;
+        });
+        connection = null;
+      }
+    }
+  }
   }
 
   @override
@@ -173,21 +233,77 @@ class _BulbControlPageState extends State<BulbControlPage> {
     return Scaffold(
       appBar: AppBar(title: Text('Bluetooth Bulb Controller')),
       body: Center(
-        child:
-            isConnecting
+        child: isConnecting
+            ? ((status == "Device not found." || status == "Device not found. Please try again.")
                 ? Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    CircularProgressIndicator(),
-                    SizedBox(height: 20),
-                    Text(
-                      status,
-                      style: TextStyle(fontSize: 18),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                )
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.bluetooth_disabled, color: Colors.red, size: 80),
+                      SizedBox(height: 20),
+                      Text(
+                        status,
+                        style: TextStyle(fontSize: 18),
+                        textAlign: TextAlign.center,
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.only(top: 20),
+                        child: ElevatedButton.icon(
+                          icon: Icon(Icons.refresh),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue,
+                            minimumSize: Size(160, 50),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          onPressed: () {
+                            scanAndConnect();
+                          },
+                          label: Text(
+                            "Scan Again",
+                            style: TextStyle(fontSize: 18, color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
                 : Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 20),
+                      Text(
+                        status,
+                        style: TextStyle(fontSize: 18),
+                        textAlign: TextAlign.center,
+                      ),
+                      if (status == "Connection failed.")
+                        Padding(
+                          padding: const EdgeInsets.only(top: 20),
+                          child: ElevatedButton.icon(
+                            icon: Icon(Icons.refresh),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blue,
+                              minimumSize: Size(160, 50),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            onPressed: () {
+                              scanAndConnect();
+                            },
+                            label: Text(
+                              "Scan Again",
+                              style: TextStyle(fontSize: 18, color: Colors.white),
+                            ),
+                          ),
+                        ),
+                    ],
+                  )
+              )
+            : Padding(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(
@@ -207,27 +323,77 @@ class _BulbControlPageState extends State<BulbControlPage> {
                         style: TextStyle(fontSize: 24, color: Colors.white),
                       ),
                     ),
+                    SizedBox(height: 30),
+                    // Arduino value round progress UI
+                    Card(
+                      elevation: 6,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                      color: Colors.blue[50],
+                      child: Container(
+                        width: 220,
+                        padding: EdgeInsets.all(16),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              'Arduino Value',
+                              style: TextStyle(fontSize: 16, color: Colors.blue[800], fontWeight: FontWeight.bold),
+                            ),
+                            SizedBox(height: 10),
+                            Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                SizedBox(
+                                  width: 90,
+                                  height: 90,
+                                  child: CircularProgressIndicator(
+                                    value: latestValue / 100.0,
+                                    strokeWidth: 10,
+                                    backgroundColor: Colors.grey[300],
+                                    valueColor: AlwaysStoppedAnimation<Color>(Colors.blueAccent),
+                                  ),
+                                ),
+                                Text(
+                                  "$latestValue",
+                                  style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.blue[900]),
+                                ),
+                              ],
+                            ),
+                            SizedBox(height: 16),
+                            Text("Value Progress", style: TextStyle(fontSize: 14)),
+                          ],
+                        ),
+                      ),
+                    ),
                     SizedBox(height: 20),
                     Text(
                       status,
                       style: TextStyle(fontSize: 18),
                       textAlign: TextAlign.center,
                     ),
-                    if (status == "Device not found. Please try again.")
-                      Padding(
-                        padding: const EdgeInsets.only(top: 20),
-                        child: ElevatedButton(
-                          onPressed: () {
-                            scanAndConnect();
-                          },
-                          child: Text(
-                            "Scan Again",
-                            style: TextStyle(fontSize: 18),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 20),
+                      child: ElevatedButton.icon(
+                        icon: Icon(Icons.refresh),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue,
+                          minimumSize: Size(160, 50),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
                           ),
                         ),
+                        onPressed: () {
+                          scanAndConnect();
+                        },
+                        label: Text(
+                          "Scan Again",
+                          style: TextStyle(fontSize: 18, color: Colors.white),
+                        ),
                       ),
+                    ),
                   ],
                 ),
+              ),
       ),
     );
   }
